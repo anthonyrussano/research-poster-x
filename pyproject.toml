@@ -1,0 +1,13 @@
+[project]
+name = "galaxy-automation"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "uiautomator2>=3.5.0",
+    "dotenv>=0.9.9",
+    "openai>=2.8.1",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.3", 
+]
