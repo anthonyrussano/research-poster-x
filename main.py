@@ -12,6 +12,7 @@ Environment variables expected:
 - GALAXY_IP           (device serial/IP for uiautomator2 connect)
 """
 
+import argparse
 import os
 import random
 import time
@@ -194,6 +195,14 @@ def post_to_x_via_android(final_text: str) -> None:
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Scrape articles and post to X")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Output scraped content and generated post without posting to Android",
+    )
+    args = parser.parse_args()
+
     print("Scraping article...")
     title, content, image_url, article_url = fetch_random_article(BASE_URL, CATEGORY_PATH)
     if not (title and content and article_url):
@@ -203,19 +212,42 @@ def main():
     if image_url:
         print(f"Image URL: {image_url}")
 
-    print("Generating tweet with LM Studio...")
+    if args.dry_run:
+        print("\n" + "=" * 60)
+        print("DRY RUN MODE - Web Scraped Content")
+        print("=" * 60)
+        print(f"\nTitle: {title}")
+        print(f"\nArticle URL: {article_url}")
+        print(f"\nImage URL: {image_url if image_url else 'None'}")
+        print(f"\nContent:\n{'-' * 60}")
+        print(content)
+        print("-" * 60)
+
+    print("\nGenerating tweet with LM Studio...")
     tweet_body = generate_tweet_from_lmstudio(title, content, article_url)
     final_text = f"{tweet_body}\n\n{article_url}".strip()
     if len(final_text) > 280:
         final_text = final_text[:277] + "..."
 
-    print("\n--- Tweet preview ---")
-    print(final_text)
-    print("---------------------\n")
+    if args.dry_run:
+        print("\n" + "=" * 60)
+        print("DRY RUN MODE - Model Generated Post")
+        print("=" * 60)
+        print(f"\nTweet Body (length: {len(tweet_body)}):")
+        print(tweet_body)
+        print(f"\nFinal Post (length: {len(final_text)}):")
+        print(final_text)
+        print("=" * 60)
+        print("\n[DRY RUN] Skipping Android posting")
+        print("Done.")
+    else:
+        print("\n--- Tweet preview ---")
+        print(final_text)
+        print("---------------------\n")
 
-    print("Posting to X via Android...")
-    post_to_x_via_android(final_text)
-    print("Done.")
+        print("Posting to X via Android...")
+        post_to_x_via_android(final_text)
+        print("Done.")
 
 
 if __name__ == "__main__":
