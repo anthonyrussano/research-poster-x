@@ -97,7 +97,6 @@ def fetch_random_article(
     content = "\n".join(content_list)
     return title, content, image_url, article_url
 
-
 def generate_tweet_from_lmstudio(title: str, content: str, source_url: str) -> str:
     """Use LM Studio (OpenAI-compatible API) to craft a tweet."""
     if not LM_BASE_URL or not LM_MODEL:
@@ -106,29 +105,58 @@ def generate_tweet_from_lmstudio(title: str, content: str, source_url: str) -> s
     client = OpenAI(base_url=LM_BASE_URL, api_key=LM_API_KEY)
 
     # Leave room for the source URL when posting
-    char_budget = max(120, 280 - len(source_url) - 6)
-    system_msg = (
-        "You are a social media expert who creates engaging tweets. "
-        "Write a single informative tweet that is factual and enticing. "
-        "Avoid hype, keep it readable, and do not use hashtags."
-        "You must be as human-like as possible with respect to the english language, your grammar, and juxtaposition."
-        "You are passionate about the topic and you want to share your knowledge with the world."
-    )
-    user_msg = (
-        f"Article title: {title or 'Untitled'}\n\n"
-        f"Key points:\n{content}\n\n"
-        f"Constraints: "
-        f"- Keep the tweet under {char_budget} characters. "
-        f"- Do NOT include the URL; it will be appended separately. "
-        f"- Do not use markdown or quotes from the article; rewrite briefly. "
-        f"- Return only the tweet text."
-    )
+    # char_budget = max(120, 280 - len(source_url) - 6)
+    char_budget = 3000
+    system_msg = """You write social media posts that sound completely natural and human. 
+    Your goal is to produce a piece of writing that reads as if it were written by a thoughtful college student, 
+    not an AI.
+
+Your writing style:
+- Sound like a thoughtful research expert explaining what they learned to the world.
+- Use simple, everyday language. Keep sentences short and easy to follow.
+- Be direct and get to the point quickly. No fluff.
+- Be genuine - don't force excitement or fake enthusiasm.
+- Cut unnecessary adjectives and adverbs.
+- Be honest about the topic without overselling or hyping it up.
+- Avoid sounding like marketing copy.
+- Keep a natural flow. Use plain transitions.
+
+Hard constraints:
+- No hashtags.
+- No emojis.
+
+NEVER use these AI-sounding phrases:
+- "Let's dive into", "Unleash", "Game-changing", "Revolutionary"
+- "Transform your", "Unlock the secrets", "Leverage", "Optimize"
+- "Did you know?", "Here's why", "The truth about"
+
+Instead, write like a real person sharing something interesting they learned.
+Your post should sound like something you'd actually say out loud to someone."""
+
+    user_msg = f"""Write a single tweet about this topic:
+
+Title: {title or 'Untitled'}
+
+Key points:
+{content}
+
+Rules:
+- You don't have a 280 character limit, you just need to stay under {char_budget} characters
+- No URL (it gets added separately)
+- No hashtags
+- No markdown or quotes - rewrite in your own words.
+- Include at least 1 specific, concrete detail from the key points (not abstract fluff).
+- Just return the tweet text, nothing else.
+
+Don't start the tweet with phrases like "I just read" or "I've been reading about...". Just start with the interesting detail you found.
+
+Write it like a real person who genuinely finds this interesting, not like marketing copy."""
 
     resp = client.chat.completions.create(
         model=LM_MODEL,
         messages=[{"role": "system", "content": system_msg}, {"role": "user", "content": user_msg}],
         temperature=0.7,
-        max_tokens=160,
+        max_tokens=1600,
     )
     tweet = resp.choices[0].message.content.strip()
     # Hard cap to keep room for the URL when combined
@@ -226,8 +254,8 @@ def main():
     print("\nGenerating tweet with LM Studio...")
     tweet_body = generate_tweet_from_lmstudio(title, content, article_url)
     final_text = f"{tweet_body}\n\n{article_url}".strip()
-    if len(final_text) > 280:
-        final_text = final_text[:277] + "..."
+    if len(final_text) > 3000:
+        final_text = final_text[:3000] + "..."
 
     if args.dry_run:
         print("\n" + "=" * 60)
