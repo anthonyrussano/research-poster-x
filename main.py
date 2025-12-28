@@ -70,6 +70,8 @@ def fetch_random_article(
 
     image_tag = article_soup.find("img")
     image_url = image_tag["src"] if image_tag else None
+    if image_url:
+        image_url = _strip_cloudinary_transform(image_url)
 
     # Drop footnotes so they do not pollute the prompt
     footnotes_section = article_soup.find("section", class_="footnotes")
@@ -97,6 +99,11 @@ def fetch_random_article(
 
     content = "\n".join(content_list)
     return title, content, image_url, article_url
+
+
+def _strip_cloudinary_transform(image_url: str) -> str:
+    """Remove specific Cloudinary transforms if present."""
+    return image_url.replace("/w_200,f_auto/", "/")
 
 def generate_tweet_from_lmstudio(title: str, content: str, source_url: str) -> str:
     """Use LM Studio (OpenAI-compatible API) to craft a tweet."""
