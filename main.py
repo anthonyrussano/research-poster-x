@@ -16,6 +16,7 @@ import argparse
 import os
 import random
 import time
+import urllib.parse
 from typing import List, Optional, Tuple
 
 import requests
@@ -163,7 +164,212 @@ Write it like a real person who genuinely finds this interesting, not like marke
     return tweet[:char_budget]
 
 
-def post_to_x_via_android(final_text: str) -> None:
+def _tap_first_visible_image(d: u2.Device) -> None:
+    """Tap the first visible image thumbnail in the picker."""
+    # If the compose screen already shows the media rail, prefer it.
+    media_rail = d(resourceId="com.twitter.android:id/media_rail_recycler_view")
+    if len(media_rail) > 0:
+        rail_images = d.xpath(
+            '//*[@resource-id="com.twitter.android:id/media_rail_recycler_view"]'
+            '//*[@content-desc="Image"]'
+        ).all()
+        if rail_images:
+            rail_images[0].click()
+            return
+
+    thumb_ids = [
+        "com.twitter.android:id/asset_thumbnail",
+        "com.twitter.android:id/thumbnail",
+        "com.twitter.android:id/gallery_grid",
+        "com.google.android.documentsui:id/icon_thumb",
+        "com.android.documentsui:id/icon_thumb",
+    ]
+    for thumb_id in thumb_ids:
+        thumbs = d(resourceId=thumb_id)
+        if len(thumbs) > 0:
+            if thumb_id == "com.twitter.android:id/gallery_grid":
+                # Prefer image tiles (skip camera/other tiles) using content-desc.
+                image_nodes = d.xpath(
+                    '//*[@resource-id="com.twitter.android:id/gallery_grid"]'
+                    '//*[@content-desc="Image"]'
+                ).all()
+                if image_nodes:
+                    candidates = []
+                    for node in image_nodes:
+                        info = node.info
+                        bounds = info.get("bounds", {})
+                        left = bounds.get("left")
+                        top = bounds.get("top")
+                        if left is None or top is None:
+                            continue
+                        candidates.append((top, left, node))
+                    if candidates:
+                        candidates.sort(key=lambda item: (item[0], item[1]))
+                        candidates[0][2].click()
+                        return
+                # Fallback: pick top-left among all grid children
+                candidates = []
+                for thumb in thumbs:
+                    bounds = thumb.info.get("bounds", {})
+                    left = bounds.get("left")
+                    top = bounds.get("top")
+                    if left is None or top is None:
+                        continue
+                    candidates.append((top, left, thumb))
+                if candidates:
+                    candidates.sort(key=lambda item: (item[0], item[1]))
+                    candidates[0][2].click()
+                    return
+            else:
+                thumbs[0].click()
+                return
+
+    # Fallback: try first clickable image view in a recycler/grid.
+    candidates = d(className="android.widget.ImageView")
+    for i in range(min(len(candidates), 10)):
+        if candidates[i].info.get("clickable"):
+            candidates[i].click()
+            return
+
+    raise RuntimeError("No image thumbnail found in the picker. Inspect the gallery view.")
+
+
+def _allow_if_prompted(d: u2.Device) -> None:
+    allow_texts = ["Allow", "ALLOW", "While using the app", "Allow all the time"]
+    for text in allow_texts:
+        if d(text=text).exists:
+            d(text=text).click()
+            time.sleep(1)
+
+
+def _switch_gallery_album(d: u2.Device) -> None:
+    """Try to switch the gallery view to Downloads/Recents so the newest file is first."""
+    if d(resourceId="com.twitter.android:id/drop_down_arrow").click_exists(timeout=1):
+        time.sleep(1)
+    elif d(text="Gallery").click_exists(timeout=1):
+        time.sleep(1)
+    else:
+        return
+
+    album_labels = ["Downloads", "Download", "Recents", "Recent", "Photos"]
+    for label in album_labels:
+        if d(text=label).click_exists(timeout=1):
+            time.sleep(1)
+            return
+        if d(textContains=label).click_exists(timeout=1):
+            time.sleep(1)
+            return
+
+
+def download_image_via_brave(image_url: str) -> None:
+    """Open Brave, load the image URL, and download it to the device gallery."""
+    if not ANDROID_SERIAL:
+        raise RuntimeError("Set GALAXY_IP to your device serial/IP before running.")
+
+    d = u2.connect(ANDROID_SERIAL)
+    d.screen_on()
+    d.press("home")
+
+    # Launch Brave
+    d.app_start("com.brave.browser")
+    d.app_wait("com.brave.browser", front=True, timeout=10)
+
+    # Focus URL bar
+    url_bar = None
+    if d(resourceId="com.brave.browser:id/url_bar").exists:
+        url_bar = d(resourceId="com.brave.browser:id/url_bar")
+        url_bar.click()
+    elif d(descriptionContains="Search").exists:
+        url_bar = d(descriptionContains="Search")
+        url_bar.click()
+
+    # Enter URL and navigate
+    if url_bar:
+        url_bar.set_text(urllib.parse.quote(image_url, safe=":/?&=%"))
+    elif d(focused=True).exists:
+        d(focused=True).set_text(urllib.parse.quote(image_url, safe=":/?&=%"))
+    else:
+        raise RuntimeError("URL bar not found in Brave. Inspect with weditor.")
+
+    d.press("enter")
+    time.sleep(5)
+
+    # Long-press the image/webview to open the context menu
+    def open_context_menu() -> bool:
+        webviews = d(className="android.webkit.WebView")
+        if len(webviews) > 0:
+            bounds = webviews[0].info.get("bounds", {})
+            x = (bounds.get("left", 0) + bounds.get("right", 0)) // 2
+            y = (bounds.get("top", 0) + bounds.get("bottom", 0)) // 2
+            d.long_click(x, y, duration=1.0)
+        else:
+            width, height = d.window_size()
+            d.long_click(width // 2, height // 2, duration=1.0)
+        return d(resourceId="com.brave.browser:id/context_menu_list_view").wait(timeout=2)
+
+    if not open_context_menu():
+        time.sleep(1)
+        if not open_context_menu():
+            raise RuntimeError("Brave image context menu did not appear.")
+
+    # Try common menu labels for saving the image
+    save_labels = ["Download image", "Save image", "Save image as", "Download"]
+    clicked = False
+    if d(resourceId="com.brave.browser:id/context_menu_list_view").exists:
+        for label in save_labels:
+            if d(text=label).click_exists(timeout=1):
+                clicked = True
+                break
+            if d(textContains=label).click_exists(timeout=1):
+                clicked = True
+                break
+
+    if not clicked and d(text="Open image in new tab").exists:
+        d(text="Open image in new tab").click()
+        time.sleep(2)
+        if not open_context_menu():
+            raise RuntimeError("Brave image context menu did not appear after opening new tab.")
+
+    for label in save_labels:
+        if d(text=label).click_exists(timeout=1):
+            clicked = True
+            break
+        if d(textContains=label).click_exists(timeout=1):
+            clicked = True
+            break
+
+    if not clicked:
+        raise RuntimeError("Save/Download image option not found in Brave context menu.")
+
+    _allow_if_prompted(d)
+    time.sleep(2)
+
+
+def attach_latest_image_to_tweet(d: u2.Device) -> None:
+    """Open media picker and attach the newest image (typically first in grid)."""
+    media_buttons = [
+        ("resourceId", "com.twitter.android:id/add_media"),
+        ("resourceId", "com.twitter.android:id/gallery"),
+        ("resourceId", "com.twitter.android:id/attachment_button"),
+        ("description", "Photos"),
+        ("descriptionContains", "Add photo"),
+        ("descriptionContains", "Add media"),
+    ]
+    for attr, value in media_buttons:
+        if d(**{attr: value}).exists:
+            d(**{attr: value}).click()
+            break
+    else:
+        raise RuntimeError("Media button not found. Inspect the compose toolbar.")
+
+    time.sleep(2)
+    _allow_if_prompted(d)
+    _switch_gallery_album(d)
+    _tap_first_visible_image(d)
+    time.sleep(1)
+
+
+def post_to_x_via_android(final_text: str, attach_latest_image: bool = False) -> None:
     """Automate the X Android app to publish the given text."""
     if not ANDROID_SERIAL:
         raise RuntimeError("Set GALAXY_IP to your device serial/IP before running.")
@@ -214,6 +420,9 @@ def post_to_x_via_android(final_text: str) -> None:
             raise RuntimeError("Tweet text field not found. Inspect the editor element.")
     else:
         raise RuntimeError("Tweet text field not found. Inspect the editor element.")
+
+    if attach_latest_image:
+        attach_latest_image_to_tweet(d)
 
     # Tap Post
     d(resourceId="com.twitter.android:id/button_tweet").click()
@@ -273,11 +482,14 @@ def main():
         print(final_text)
         print("---------------------\n")
 
+        if image_url:
+            print("Downloading image via Brave...")
+            download_image_via_brave(image_url)
+
         print("Posting to X via Android...")
-        post_to_x_via_android(final_text)
+        post_to_x_via_android(final_text, attach_latest_image=bool(image_url))
         print("Done.")
 
 
 if __name__ == "__main__":
     main()
-
